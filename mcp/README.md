@@ -334,6 +334,43 @@ tab calls `shutdown()` so no claude process is left behind. Each pane (and the f
 runs its own chats - don't open the SAME chat in two of them at once.
 Test: `hython tests/test_chat_pane_embedded.py`.
 
+## Context, Agents and our own compaction - like Dremzo Code (2026-11-04)
+
+Title bar **◨** (Ctrl+I), or a click on the context ring, opens a right-hand pane with two tabs.
+Code: `brother_context.py` (trackers + the tabs + the divider), `brother_compact.py` (compaction).
+
+- **Context tab.** From the CLI's `get_context_usage` (shape measured 2026-11-04,
+  `tests/probe_context_usage.py`, no model call): the **conversation** ("Messages") and the
+  **fixed part** (system prompt, tools, skills, memory files, agents - compaction never shrinks it),
+  a bar per category, deferred tools kept apart, a history of compactions / overflows / API retries,
+  "Prompt is too long" named with what to do, and **Compact now**.
+- **Agents tab.** Every sub-agent (Agent/Task tool) of the chat: type, background, state, time,
+  tokens and tool uses (from the `<usage>` tail Claude adds), what it is doing now, its task and
+  answer. A background agent ends on its `task_notification`; a foreground one with no answer is
+  "stopped" at the end of the turn. The tab title shows how many are running.
+- **The divider.** A compaction is a line across the chat with the summary folded inside. A
+  reloaded chat no longer shows the CLI's compact summary as one of Plug's own messages.
+- **Our own compaction** (on by default; switch in the Context tab, per chat). After a turn, when
+  idle, if the conversation passes ~150K tokens (or the whole context 80% of the window with a
+  conversation over 30K): the older part is cut into stretches (the newest ~30K stay word for
+  word), Haiku summarises the newest ≤3 (older ones get a no-model index stub), and a **program
+  checks** each summary - every commit, file / `$HIP` / node path, link and amount Plug wrote must
+  be in it exactly; 3 tries, ≤4 model calls per compaction, else that stretch stays in full and it
+  retries 4 turns later. Summaries over 40K are rolled up. Then the chat continues in a **fresh CLI
+  session** whose first message carries `<room-history>` (summaries + recent turns + where the old
+  transcripts are, so Claude can Grep/Read them). The sidebar keeps one row and the title; a
+  reload shows the whole chain with a pink "New stretch" line. Filling up again within 3 turns,
+  3 times in a row, stops it for that chat. State: `~/.houdini_brother/context/<first session>/`;
+  the session chain: `chat_state.json` → `continued`.
+- Typing `/compact` still runs the CLI's own compaction; **Compact now** runs ours.
+- Left out on purpose (not useful in Houdini): GPT/opencode engines, Dremzo's recall/open_raw
+  archive, the shared-room ledger, the cross-chat agent graph.
+
+Tests (offscreen, fake session, no model): `hython tests/test_chat_context_agents.py`,
+`hython tests/test_chat_compact.py`; `hython tests/sabotage_chat_compact.py` breaks four guards
+and asserts the compaction test goes red for each. Live, a real Haiku summary checked like a real
+compaction: `hython tests/live_compact_writer.py --synthetic` (~$0.02; 24/24 kept, first try).
+
 ## Held control frame + the prompt-node demo (2026-10-25)
 
 - **Held frame.** The control frame / dark fade used to fall away 1.2 s after the last tool

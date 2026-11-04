@@ -28,6 +28,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import brother_accounts as ACC
 import brother_context as CTX
+import brother_compact as CMP
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # <repo>/mcp/houdini/this
 MCP_CONFIG = os.path.join(REPO, ".mcp.json")
@@ -305,7 +306,7 @@ def _first_title(path):
                 return o["summary"], True
             if o.get("type") == "user" and not o.get("isMeta"):
                 msg = o.get("message")
-                t = _text_of(msg.get("content") if isinstance(msg, dict) else None).strip()
+                t = CMP.strip_injected(_text_of(msg.get("content") if isinstance(msg, dict) else None).strip())
                 if t and not t.startswith("<") and not t.startswith("Caveat:"):
                     return t, True
     return None, False
@@ -464,10 +465,12 @@ def load_state():
         with open(STATE_FILE, encoding="utf8") as fh:
             st = json.load(fh)
         if isinstance(st, dict):
-            return {"pinned": list(st.get("pinned") or []), "archived": list(st.get("archived") or [])}
+            cont = st.get("continued") if isinstance(st.get("continued"), dict) else {}
+            return {"pinned": list(st.get("pinned") or []), "archived": list(st.get("archived") or []),
+                    "continued": dict(cont)}
     except (OSError, ValueError):
         pass
-    return {"pinned": [], "archived": []}
+    return {"pinned": [], "archived": [], "continued": {}}
 
 
 def save_state(st):
@@ -564,12 +567,14 @@ def load_transcript(cwd, sid):
                 if o.get("type") == "user":
                     c = msg.get("content")
                     if isinstance(c, str):
-                        if not c.startswith("<"):
+                        c = CMP.strip_injected(c)          # a continued chat: only Plug's own words
+                        if c and not c.startswith("<"):
                             events.append(("user", {"text": c, "uuid": o.get("uuid")}))
                     else:
                         for b in c or []:
-                            if b.get("type") == "text" and not b.get("text", "").startswith("<"):
-                                events.append(("user", {"text": b["text"], "uuid": o.get("uuid")}))
+                            t = CMP.strip_injected(b.get("text", "")) if b.get("type") == "text" else ""
+                            if b.get("type") == "text" and t and not t.startswith("<"):
+                                events.append(("user", {"text": t, "uuid": o.get("uuid")}))
                             elif b.get("type") == "tool_result":
                                 events.append(("tool_result", b))
                 elif o.get("type") == "assistant":
@@ -1366,6 +1371,11 @@ class Convo(QtCore.QObject):
         self.ctx = CTX.ContextTracker()   # the Context tab: what fills it, compactions, overflows
         self.agents = CTX.AgentTracker()  # the Agents tab: every sub-agent this chat started
         self.last_divider = None          # the newest "Conversation compacted" line (its summary lands later)
+        # the chat's own compaction (brother_compact): summaries -> a fresh session that starts with them
+        self.compacter = CMP.Compacter(self, self._write_summary, self)
+        self.compacter.changed.connect(lambda: self.panel.convo_changed(self))
+        self.pending_inject = None        # <room-history> for the fresh session's first message
+        self._writers = []
         self.api_source = None            # "none" = signed in with the subscription, not an API key
         self.announced = None
         self.follow = True
@@ -1491,6 +1501,7 @@ class Convo(QtCore.QObject):
             self.session.start()
             if not self.fork:
                 self.sid = self.session.session_id
+                self.compacter.bind(self.root_id())
             self.control(("settings",), "get_settings")   # -> applied.effort for the effort button
             if self.fast:                                # a restarted process forgets it
                 self.control(("fast", True), "apply_flag_settings", settings={"fastMode": True})
@@ -1521,7 +1532,12 @@ class Convo(QtCore.QObject):
         self.start()
         if not retry:
             self.add_user(text, len(imgs))
-        if self.session.send(text, imgs):
+        inject = self.pending_inject
+        if self.session.send((inject + text) if inject else text, imgs):
+            if inject:                    # the fresh session now holds the summaries; keep its name
+                self.pending_inject = None
+                if self.title and self.title != "New chat":
+                    QtCore.QTimer.singleShot(0, lambda t=self.title: self.rename(t))
             self.has_history = True
             self.turn_t0 = time.time()
             self.edited, self.edit_ids = {}, {}
@@ -1605,6 +1621,100 @@ class Convo(QtCore.QObject):
         self.model = model
         if self.session is not None and self.session.running() and not self.session.parked:
             self.control(("model", model), "set_model", model=model or "default")
+
+    # ---------------------------------------------------------------- the chat's own compaction (host for CMP.Compacter)
+    def root_id(self):
+        """The first session of this chat: a compaction continues it in a new CLI session, and the
+        compaction state, the sidebar row and the title all stay with the first one."""
+        return self.panel.chain_of(self.sid)[0] if self.sid else None
+
+    def idle(self):
+        return not (self.busy or self.waiting or self.queue or self.tasks or self.fork)
+
+    def transcript_path(self):
+        return os.path.join(project_dir(self.panel.cwd), "%s.jsonl" % self.sid)
+
+    def transcript_files(self):
+        return [os.path.join(project_dir(self.panel.cwd), "%s.jsonl" % s) for s in self.panel.chain_of(self.sid)]
+
+    def compact_note(self, text, color="#77756f"):
+        self.add_note(text, color)
+        self.panel.convo_changed(self)
+
+    def continue_fresh(self, inject, line, summary, meta):
+        """The switch: the next message starts a FRESH claude session whose first message carries the
+        verified summaries + recent turns. The old session's transcript stays on disk (Claude is told
+        where), its sidebar row is hidden behind this one."""
+        old = self.sid
+        new = str(uuid.uuid4())
+        self.panel.continued(old, new)
+        if self.session is not None:
+            self.session.stop()
+        self.sid, self.has_history, self.fork = new, False, False
+        self.pending_inject = inject
+        self.context = None
+        d = self.add_divider(meta, summary, title=line)
+        d.title.setStyleSheet("color:#ff4f9a;font-size:12px;")
+        self.panel.convo_changed(self)
+
+    def compact_now(self):
+        """Compact now (the Context tab): our compaction, whatever the budget says."""
+        return self.compacter.maybe_run(force=True)
+
+    def _write_summary(self, prompt, system, done):
+        """One Haiku call through the same claude CLI and login as the chat - no session saved,
+        no tools, run in a scratch folder so no project hooks or CLAUDE.md come with it."""
+        exe = claude_exe()
+        if not exe:
+            return done(None, "claude CLI not found")
+        work = os.path.join(os.path.expanduser("~"), ".houdini_brother", "writer")
+        os.makedirs(work, exist_ok=True)
+        p = QtCore.QProcess(self)
+        p.setProgram(exe)
+        p.setArguments(["-p", "--output-format", "json", "--model", CMP.WRITER_MODEL, "--system-prompt", system,
+                        "--tools", "", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"])
+        p.setWorkingDirectory(work)
+        env = claude_env()
+        ACC.apply_env(env.insert, env.remove, self.account)
+        p.setProcessEnvironment(env)
+        state = {"out": b"", "done": False}
+        timer = QtCore.QTimer(p); timer.setSingleShot(True)
+
+        def finish(text, err=None):
+            if state["done"]:
+                return
+            state["done"] = True
+            timer.stop()
+            if p in self._writers:
+                self._writers.remove(p)
+            done(text, err)
+
+        def read():
+            try:
+                state["out"] += bytes(p.readAllStandardOutput())
+            except RuntimeError:
+                pass
+
+        def ended(code, _st=None):
+            read()
+            try:
+                o = json.loads(state["out"].decode("utf8", "replace").strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                o = {}
+            if code == 0 and not o.get("is_error") and isinstance(o.get("result"), str) and o["result"].strip():
+                finish(o["result"])
+            else:
+                finish(None, (o.get("result") if isinstance(o.get("result"), str) else "") or "writer exited %s" % code)
+
+        def timeout():
+            p.kill(); finish(None, "the summary writer timed out")
+        p.readyReadStandardOutput.connect(read)
+        p.finished.connect(ended)
+        p.errorOccurred.connect(lambda e: e == QtCore.QProcess.FailedToStart and finish(None, "could not start claude"))
+        timer.timeout.connect(timeout); timer.start(240000)
+        self._writers.append(p)
+        p.start()
+        p.write(prompt.encode("utf8")); p.closeWriteChannel()
 
     # ---------------------------------------------------------------- feed
     def _add(self, w):
@@ -1697,14 +1807,34 @@ class Convo(QtCore.QObject):
         self.cur_text = None
         return c
 
-    def add_divider(self, meta, summary=None):
+    def add_divider(self, meta, summary=None, title=None):
         """'↻ Conversation compacted' across the feed; the Context tab's history gets it too."""
-        self.last_divider = self._add(CTX.CompactDivider(meta, summary))
-        self.ctx.compacted(meta, meta.get("t"))
+        self.last_divider = self._add(CTX.CompactDivider(meta, summary, title=title))
+        if title is None:
+            self.ctx.compacted(meta, meta.get("t"))
         self.cur_text = None
         return self.last_divider
 
     def load(self, sid):
+        """A chat from disk. A chat our compaction continued is a chain of CLI sessions: each earlier
+        one is shown, then the 'New stretch' line, then the next."""
+        chain = self.panel.chain_of(sid)
+        self.compacter.bind(chain[0])
+        lines = [e for e in self.compacter.st.get("events", []) if e.get("kind") == "compacted"]
+        for i, s in enumerate(chain):
+            self._load_one(s)
+            if i < len(chain) - 1:
+                ev = lines[i] if i < len(lines) else {}
+                d = self.add_divider({"trigger": "fx", "pre": ev.get("before", 0), "post": ev.get("after", 0)},
+                                     title=ev.get("text") or "↻  New stretch - the chat continued from verified summaries.")
+                d.title.setStyleSheet("color:#ff4f9a;font-size:12px;")
+                if i == len(chain) - 2:
+                    d.set_summary("\n\n".join(CMP.unit_text(u).strip() for u in self.compacter.st.get("units", [])))
+        self.agents.turn_ended(everything=True)    # a reloaded chat has nothing still running
+        self.cur_text = None
+        self.add_note("Resumed - continuing this session.")
+
+    def _load_one(self, sid):
         for kind, v in load_transcript(self.panel.cwd, sid):
             if kind == "user":
                 self.add_user(v["text"], uuid_=v.get("uuid"))
@@ -1723,9 +1853,6 @@ class Convo(QtCore.QObject):
                 if c:
                     c.set_result(v.get("content"), v.get("is_error"))
                 self.agents.tool_result(v)
-        self.agents.turn_ended(everything=True)    # a reloaded chat has nothing still running
-        self.cur_text = None
-        self.add_note("Resumed - continuing this session.")
 
     # ---------------------------------------------------------------- events from claude
     def _answer(self, *a, **kw):
@@ -1852,6 +1979,8 @@ class Convo(QtCore.QObject):
         elif what[0] == "context" and body.get("maxTokens"):
             self.context = (body.get("totalTokens") or 0, body["maxTokens"])
             self.ctx.usage(body)
+            if self.idle():
+                self.compacter.soon()                  # a fresh measurement after a turn: over budget?
         self.panel.convo_changed(self)
 
     def on_event(self, o):
@@ -1931,7 +2060,8 @@ class Convo(QtCore.QObject):
             if o.get("isReplay") and not results and o.get("uuid") and self.bubbles:
                 # our own message echoed back = its rewind point. Match by TEXT: a /model or other
                 # local command is echoed too (<local-command-stdout>...) and must not take the slot
-                txt = _text_of(content if isinstance(content, list) else [{"type": "text", "text": content}]).strip()
+                txt = CMP.strip_injected(_text_of(content if isinstance(content, list)
+                                                  else [{"type": "text", "text": content}]).strip())
                 for f in self.bubbles:
                     if f.sent_text and f.sent_text == txt:
                         self.bubbles.remove(f)
@@ -1989,6 +2119,7 @@ class Convo(QtCore.QObject):
             self.cur_text = self.cur_think = self.cur_tool = None
             self.streams = {}
             self.agents.turn_ended()
+            self.compacter.turn_finished()
             self._working(False)
             if self.edited:
                 self._add(EditedCard(self.edited))
@@ -3033,6 +3164,25 @@ class ChatPanel(QtWidgets.QWidget):
         self.inspector.context.compact_handler = self.compact_now
         self.inspector.tabs.currentChanged.connect(lambda *_: self.refresh_inspector())
 
+    # ---------------------------------------------------------------- chats our compaction continued
+    def chain_of(self, sid):
+        """The CLI sessions of one chat, oldest first, ending with `sid` (chat_state 'continued')."""
+        back = {new: old for old, new in self.state.get("continued", {}).items()}
+        chain, seen = [sid], {sid}
+        while chain[0] in back and back[chain[0]] not in seen:
+            chain.insert(0, back[chain[0]]); seen.add(chain[0])
+        return chain
+
+    def continued(self, old, new):
+        """`old` was compacted into `new`: the sidebar shows the chat under `new` from now on, and a
+        pin / archive moves with it."""
+        self.state.setdefault("continued", {})[old] = new
+        for key in ("pinned", "archived"):
+            if old in self.state[key]:
+                self.state[key] = [new if s == old else s for s in self.state[key]]
+        save_state(self.state)
+        self.refresh_soon()
+
     def toggle_inspector(self, tab=None):
         """The title bar's ◨ / Ctrl+I toggles the pane; the ring opens it on the Context tab."""
         if tab is None:
@@ -3051,17 +3201,59 @@ class ChatPanel(QtWidgets.QWidget):
         if not self.inspector.isVisible():
             return
         if self.inspector.tabs.currentIndex() == 0:
-            self.inspector.context.show_tracker(c.ctx, busy=c.busy or c.waiting, model=self._model_name(c.model),
-                                                force=force)
+            cp, ctxp = c.compacter, self.inspector.context
+            busy = c.busy or c.waiting or cp.running
+            # redraw only when something shown moved: a redraw resets the pane's scroll
+            key = (id(c), c.ctx.total, c.ctx.max, c.ctx.measured_at, len(c.ctx.events), busy, self._model_name(c.model),
+                   cp.st.get("on"), bool(cp.st.get("stopped")), cp.status, len(cp.st.get("units") or []),
+                   len(cp.st.get("events") or []))
+            if force or key != getattr(ctxp, "_last_key", None):
+                ctxp._last_key = key
+                extra, sig = self._compact_extra(c)
+                ctxp.show_tracker(c.ctx, busy=busy, model=self._model_name(c.model), extra=extra, force=True,
+                                  extra_sig=sig)
         else:
             self.inspector.agents.show_tracker(c.agents, force=force)
 
     def compact_now(self):
-        """The Context tab's button: the same /compact the composer takes, never during a turn."""
+        """The Context tab's button: the chat's OWN compaction (verified summaries, a fresh session),
+        never during a turn. Typing /compact still runs the CLI's built-in one."""
         c = self.cur
         if c is None or c.busy or c.waiting:
             return
-        c.send("/compact", [], queue_if_busy=False)
+        c.compact_now()
+
+    def _compact_extra(self, c):
+        """The Context tab's 'Compaction (automatic)' block: the switch, what it is doing, what is in effect."""
+        st, cp = c.compacter.st, c.compacter
+        box = QtWidgets.QFrame(objectName="cmpbox")
+        box.setStyleSheet("QFrame#cmpbox{border:1px solid #2f2e2b;border-radius:10px;background:#242321;}")
+        lay = QtWidgets.QVBoxLayout(box); lay.setContentsMargins(10, 8, 10, 8); lay.setSpacing(4)
+        sw = QtWidgets.QCheckBox("Compaction (automatic)")
+        sw.setStyleSheet("QCheckBox{color:#ece9e3;font-size:12px;}")
+        sw.setChecked(bool(st.get("on", True)) and not st.get("stopped"))     # stopped reads as off; on clears it
+        sw.setToolTip("Like Dremzo Code: when the conversation passes ~%s tokens, the older part is summarised "
+                      "(Haiku, checked by a program), and the chat continues in a fresh session that starts with "
+                      "the summaries + the recent turns." % CMP.K(CMP.BUDGET["conversation"]))
+        sw.toggled.connect(lambda on: (cp.set_on(on), self.refresh_inspector(force=True)))
+        lay.addWidget(sw)
+        lines = []
+        if cp.status:
+            lines.append("<span style='color:#d9a548'>%s</span>" % cp.status)
+        if st.get("stopped"):
+            lines.append("<span style='color:#d9a548'>Stopped: %s</span>" % st["stopped"].get("reason", ""))
+        units = st.get("units") or []
+        if units:
+            lines.append("%d summar%s in effect (~%s tokens), %d stretch%s compacted" % (
+                len(units), "y" if len(units) == 1 else "ies", CMP.K(sum(u.get("tokens", 0) for u in units)),
+                st.get("next_n", 1) - 1, "" if st.get("next_n", 1) == 2 else "es"))
+        lines.append("Compacts at ~%s conversation tokens (or %d%% of the window)." % (
+            CMP.K(CMP.BUDGET["conversation"]), int(CMP.BUDGET["safety"] * 100)))
+        info = QtWidgets.QLabel("<br>".join(lines)); info.setWordWrap(True)
+        info.setStyleSheet("color:#77756f;font-size:11px;")
+        lay.addWidget(info)
+        sig = (st.get("on"), bool(st.get("stopped")), cp.status, len(units), len(st.get("events") or []))
+        return [box], sig
 
     def toggle_side(self, manual=False, show=None):
         if manual:
@@ -3721,10 +3913,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._refresh_timer.stop()                   # this refresh covers any that was pending
         # an unsent fork still carries the ORIGINAL chat's id until its first turn: highlight nothing
         sel = self.cur.sid if (self.cur is not None and not self.cur.fork) else None
-        rows = list_sessions(self.cwd)
+        gone = self.state.get("continued", {})       # sessions a compaction continued: shown as their successor
+        rows = [r for r in list_sessions(self.cwd) if r[0] not in gone]
         on_disk = {sid for sid, _t, _m in rows}
         # live conversations not written to disk yet go on top
-        live = [(c.sid, c.title, time.time()) for c in self.convos if c.sid and c.sid not in on_disk and c.working]
+        # (a chat just compacted into a fresh session has no file until its next message - it stays listed)
+        live = [(c.sid, c.title, time.time()) for c in self.convos
+                if c.sid and c.sid not in on_disk and (c.working or c.pending_inject)]
         allrows = live + rows
         q = self.search.text().strip().lower() if hasattr(self, "search") else ""
         if q:                                    # 6. title or anything said in the chat

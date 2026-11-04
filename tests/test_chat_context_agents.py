@@ -138,11 +138,14 @@ check("too long: the history names it", c.ctx.events[-1]["kind"] == "too_long")
 
 # ---- Compact now
 fs.busy = False; app.processEvents()
+asked = []
+c.compact_now = lambda: asked.append(1)
 p.compact_now()
-check("Compact now sends /compact when idle", fs.sent and fs.sent[-1] == "/compact", fs.sent)
-n = len(fs.sent)
+check("Compact now runs the chat's own compaction when idle", asked == [1], asked)
+fs.busy = True
 p.compact_now()
-check("...and does nothing during a turn", len(fs.sent) == n, fs.sent)
+check("...and does nothing during a turn", asked == [1], asked)
+del c.compact_now
 fs.busy = False
 
 # ---- agents

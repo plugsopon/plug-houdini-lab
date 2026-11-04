@@ -257,12 +257,12 @@ class CompactDivider(QtWidgets.QFrame):
     """The '↻ Conversation compacted' line in the transcript (Dremzo Code's StretchLine): a left
     border, the words, and - when the summary is known - a fold that opens it."""
 
-    def __init__(self, meta, summary=None, parent=None):
+    def __init__(self, meta, summary=None, parent=None, title=None):
         super().__init__(parent)
         self.setObjectName("stretch")
         self.setStyleSheet("QFrame#stretch{border:none;border-left:2px solid #6aa5ff;background:transparent;}")
         lay = QtWidgets.QVBoxLayout(self); lay.setContentsMargins(10, 2, 0, 2); lay.setSpacing(4)
-        self.title = QtWidgets.QLabel(compact_title(meta)); self.title.setWordWrap(True)
+        self.title = QtWidgets.QLabel(title or compact_title(meta)); self.title.setWordWrap(True)
         self.title.setStyleSheet("color:#6aa5ff;font-size:12px;")
         lay.addWidget(self.title)
         self.fold = QtWidgets.QPushButton("Show the summary", objectName="flat")
