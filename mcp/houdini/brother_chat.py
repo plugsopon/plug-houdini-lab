@@ -27,6 +27,7 @@ import hou
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import brother_accounts as ACC
+import brother_context as CTX
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # <repo>/mcp/houdini/this
 MCP_CONFIG = os.path.join(REPO, ".mcp.json")
@@ -546,7 +547,18 @@ def load_transcript(cwd, sid):
                     o = json.loads(line)
                 except ValueError:
                     continue
-                if o.get("isMeta") or o.get("isSidechain"):
+                if not isinstance(o, dict) or o.get("isSidechain"):
+                    continue
+                # a compaction: the divider, then the summary the chat continued from (a user line,
+                # but not something Plug wrote - it used to show as his own bubble on reload)
+                if o.get("type") == "system" and o.get("subtype") == "compact_boundary":
+                    events.append(("compact", dict(CTX.compact_meta(o), t=_iso_ts(o.get("timestamp")))))
+                    continue
+                if o.get("isCompactSummary"):
+                    msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+                    events.append(("summary", _text_of(msg.get("content"))))
+                    continue
+                if o.get("isMeta"):
                     continue
                 msg = o.get("message") or {}
                 if o.get("type") == "user":
@@ -1351,6 +1363,9 @@ class Convo(QtCore.QObject):
         self.tasks = {}                   # background task_id -> description
         self.cur_text = self.cur_think = self.cur_tool = None
         self.context = None               # (used, max) from get_context_usage
+        self.ctx = CTX.ContextTracker()   # the Context tab: what fills it, compactions, overflows
+        self.agents = CTX.AgentTracker()  # the Agents tab: every sub-agent this chat started
+        self.last_divider = None          # the newest "Conversation compacted" line (its summary lands later)
         self.api_source = None            # "none" = signed in with the subscription, not an API key
         self.announced = None
         self.follow = True
@@ -1682,18 +1697,33 @@ class Convo(QtCore.QObject):
         self.cur_text = None
         return c
 
+    def add_divider(self, meta, summary=None):
+        """'↻ Conversation compacted' across the feed; the Context tab's history gets it too."""
+        self.last_divider = self._add(CTX.CompactDivider(meta, summary))
+        self.ctx.compacted(meta, meta.get("t"))
+        self.cur_text = None
+        return self.last_divider
+
     def load(self, sid):
         for kind, v in load_transcript(self.panel.cwd, sid):
             if kind == "user":
                 self.add_user(v["text"], uuid_=v.get("uuid"))
             elif kind == "text":
                 self.add_text(v)
+            elif kind == "compact":
+                self.add_divider(v)
+            elif kind == "summary":
+                if self.last_divider is not None:
+                    self.last_divider.set_summary(v)
             elif kind == "tool_use":
                 self.add_tool(v.get("name", "?"), v.get("id")).set_input(v.get("input"))
+                self.agents.tool_use(v)
             elif kind == "tool_result":
                 c = self.cards.get(v.get("tool_use_id"))
                 if c:
                     c.set_result(v.get("content"), v.get("is_error"))
+                self.agents.tool_result(v)
+        self.agents.turn_ended(everything=True)    # a reloaded chat has nothing still running
         self.cur_text = None
         self.add_note("Resumed - continuing this session.")
 
@@ -1729,17 +1759,22 @@ class Convo(QtCore.QObject):
         elif st == "status":
             if o.get("status") == "compacting":
                 self.add_note("Compacting the conversation...")
+                self.ctx.event("compacting", "Compacting the conversation...")
+                self.panel.convo_changed(self)
             elif o.get("compact_error"):
                 self.add_note("Compact failed: %s" % o["compact_error"], "#e5675f")
+                self.ctx.event("compact_error", "Compact failed: %s" % o["compact_error"], "error")
+                self.panel.convo_changed(self)
         elif st == "compact_boundary":
-            m = o.get("compact_metadata") or {}
-            self.add_note("──  Conversation compacted (%s, was %s tokens)  ──" % (
-                m.get("trigger", "?"), _k(m.get("pre_tokens") or 0)), "#6aa5ff")
+            self.add_divider(CTX.compact_meta(o))
             self.ask_context()
+            self.panel.convo_changed(self)
         elif st == "api_retry":
-            self.add_note("API busy - retry %s/%s in %.0fs (%s)" % (
+            line = "API busy - retry %s/%s in %.0fs (%s)" % (
                 o.get("attempt"), o.get("max_retries"), (o.get("retry_delay_ms") or 0) / 1000.0,
-                o.get("error_status") or o.get("error") or ""), "#d9a548")
+                o.get("error_status") or o.get("error") or "")
+            self.add_note(line, "#d9a548")
+            self.ctx.event("retry", line + " - retries by itself", "warn")
         elif st == "notification" and o.get("text"):
             self.add_note(o["text"], "#d9a548")
         elif st == "task_started":
@@ -1748,6 +1783,7 @@ class Convo(QtCore.QObject):
                 self.tasks[tid] = o.get("description") or o.get("summary") or "background task"
                 self.panel.convo_changed(self)
         elif st == "task_notification":
+            self.agents.task_notification(o)
             tid = o.get("task_id")
             if tid and o.get("status") not in ("running", "pending", None):
                 self.tasks.pop(tid, None)
@@ -1815,6 +1851,7 @@ class Convo(QtCore.QObject):
             self.mode = body.get("mode") or what[1]
         elif what[0] == "context" and body.get("maxTokens"):
             self.context = (body.get("totalTokens") or 0, body["maxTokens"])
+            self.ctx.usage(body)
         self.panel.convo_changed(self)
 
     def on_event(self, o):
@@ -1855,6 +1892,9 @@ class Convo(QtCore.QObject):
                     st["think"] = self.add_think(depth)
                 elif cb.get("type") == "tool_use":
                     st["tool"] = self.add_tool(cb.get("name", "?"), cb.get("id"), depth)
+                    self.agents.tool_use(cb, o.get("parent_tool_use_id"))
+                    if cb.get("name") in CTX.SUBAGENT_TOOLS and not depth:
+                        self.panel.convo_changed(self)
             elif et == "content_block_delta":
                 d = ev.get("delta") or {}
                 if d.get("type") == "text_delta":
@@ -1877,10 +1917,16 @@ class Convo(QtCore.QObject):
                     c = self.cards.get(b.get("id")) or self.add_tool(b.get("name", "?"), b.get("id"), depth)
                     c.set_input(b.get("input"))
                     self._track_edit(b.get("name"), b.get("id"), b.get("input"))
+                    self.agents.tool_use(b, o.get("parent_tool_use_id"))
                 elif b.get("type") == "text" and st.get("text") is None and b.get("text"):
                     self.add_text(b["text"], depth)   # no partials came (e.g. a subagent) - show whole
         elif t == "user":
             content = (o.get("message") or {}).get("content") or []
+            if o.get("isCompactSummary"):              # the summary the compacted chat continues from
+                if self.last_divider is not None:
+                    self.last_divider.set_summary(_text_of(content if isinstance(content, list)
+                                                           else [{"type": "text", "text": content}]))
+                return
             results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
             if o.get("isReplay") and not results and o.get("uuid") and self.bubbles:
                 # our own message echoed back = its rewind point. Match by TEXT: a /model or other
@@ -1898,6 +1944,9 @@ class Convo(QtCore.QObject):
                     c.set_result(b.get("content"), b.get("is_error"))
                 if b.get("is_error"):
                     self._untrack_edit(b.get("tool_use_id"))
+                if b.get("tool_use_id") in self.agents.agents:
+                    self.agents.tool_result(b)
+                    self.panel.convo_changed(self)
             st = self.streams.get(o.get("parent_tool_use_id"))
             if st:
                 st["text"] = None
@@ -1928,6 +1977,9 @@ class Convo(QtCore.QObject):
                 if o.get("api_error_status"):
                     why = "%s (HTTP %s)" % (why, o["api_error_status"])
                 self.add_note("error: %s" % why, "#e5675f")
+                if self.ctx.error(str(why)):
+                    self.add_note("The conversation is too long for the model - type /compact (or use Compact now in "
+                                  "the Context tab), or start a new chat.", "#d9a548")
                 if (self.limit_hit or ACC.LIMIT_RE.search(str(why))) and self.switch_after_limit():
                     failed = False                           # it carries on on the next account
                     stopped = True                           # no "Error" toast for a handled switch
@@ -1936,6 +1988,7 @@ class Convo(QtCore.QObject):
                                                                _k(tokens), _k(u.get("output_tokens", 0))))
             self.cur_text = self.cur_think = self.cur_tool = None
             self.streams = {}
+            self.agents.turn_ended()
             self._working(False)
             if self.edited:
                 self._add(EditedCard(self.edited))
@@ -1952,6 +2005,8 @@ class Convo(QtCore.QObject):
         self._working(False)
         self._expire_asks("Expired - claude stopped")
         self.tasks = {}
+        if not (self.session is not None and self.session.parked):
+            self.agents.turn_ended(everything=True)
         if code not in (0, None) and err.strip():
             self.add_note("claude exited (%s): %s" % (code, err.strip()[-600:]), "#e5675f")
         self.panel.convo_changed(self)
@@ -2228,11 +2283,19 @@ class EffortPopup(QtWidgets.QFrame):
 
 
 class ContextRing(QtWidgets.QWidget):
-    """How full the context window is, as a small ring (grey -> amber -> red)."""
+    """How full the context window is, as a small ring (grey -> amber -> red). Click: the Context tab."""
+    clicked = QtCore.Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(18, 18)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
         self.pct = None
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
 
     def set(self, pct, tip):
         self.pct = pct; self.setToolTip(tip); self.update()
@@ -2848,6 +2911,11 @@ class ChatPanel(QtWidgets.QWidget):
         self.head_chip = QtWidgets.QLabel("▭  %s" % os.path.basename(self.cwd.rstrip("\\/")), objectName="chip")
         self.head_chip.setToolTip(self.cwd); head.addWidget(self.head_chip, 0, QtCore.Qt.AlignVCenter)
         head.addStretch(1)
+        self.insp_btn = QtWidgets.QPushButton("◨", objectName="icon")
+        self.insp_btn.setToolTip("Context and agents (Ctrl+I)")
+        self.insp_btn.clicked.connect(lambda: self.toggle_inspector())
+        head.addWidget(self.insp_btn)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+I"), self, activated=lambda: self.toggle_inspector())
         self.max_btn = QtWidgets.QPushButton("⤢", objectName="icon")
         self.max_btn.setToolTip("Expand to fill the screen (or double-click the header)")
         self.max_btn.clicked.connect(self.toggle_max)
@@ -2947,6 +3015,7 @@ class ChatPanel(QtWidgets.QWidget):
         self.effort_btn = QtWidgets.QPushButton("Default", objectName="bar"); self.effort_btn.clicked.connect(self._effort_menu)
         self.effort_btn.setToolTip("Effort"); bar.addWidget(self.effort_btn)
         self.ring = ContextRing(); bar.addSpacing(4); bar.addWidget(self.ring); bar.addSpacing(6)
+        self.ring.clicked.connect(lambda: self.toggle_inspector("context"))
         bar.addWidget(self.send_btn); bar.addWidget(self.stop_btn)
         # resize from any edge or corner, like a normal window (see EdgeGrip) - no corner grip
         self.grips = [] if self.embedded else [EdgeGrip(self, e) for e in EdgeGrip.EDGES]
@@ -2958,6 +3027,41 @@ class ChatPanel(QtWidgets.QWidget):
         self.slash.setStyleSheet("QListWidget{background:#2a2927;border:1px solid #3a3935;color:#ece9e3;font-size:12px;}")
         self.slash.itemClicked.connect(self._slash_pick)
         self._drag = None
+
+        # the right-hand pane: Context | Agents (Dremzo Code's side tabs), closed until asked for
+        self.inspector = CTX.Inspector(); self.inspector.hide(); root.addWidget(self.inspector)
+        self.inspector.context.compact_handler = self.compact_now
+        self.inspector.tabs.currentChanged.connect(lambda *_: self.refresh_inspector())
+
+    def toggle_inspector(self, tab=None):
+        """The title bar's ◨ / Ctrl+I toggles the pane; the ring opens it on the Context tab."""
+        if tab is None:
+            self.inspector.setVisible(not self.inspector.isVisible())
+        elif self.inspector.isVisible() and self.inspector.tabs.currentIndex() == (0 if tab == "context" else 1):
+            self.inspector.hide()
+        else:
+            self.inspector.open_tab(tab)
+        self.refresh_inspector(force=True)
+
+    def refresh_inspector(self, force=False):
+        c = self.cur
+        if c is None:
+            return
+        self.inspector.set_agent_count(len(c.agents.running()))
+        if not self.inspector.isVisible():
+            return
+        if self.inspector.tabs.currentIndex() == 0:
+            self.inspector.context.show_tracker(c.ctx, busy=c.busy or c.waiting, model=self._model_name(c.model),
+                                                force=force)
+        else:
+            self.inspector.agents.show_tracker(c.agents, force=force)
+
+    def compact_now(self):
+        """The Context tab's button: the same /compact the composer takes, never during a turn."""
+        c = self.cur
+        if c is None or c.busy or c.waiting:
+            return
+        c.send("/compact", [], queue_if_busy=False)
 
     def toggle_side(self, manual=False, show=None):
         if manual:
@@ -3555,14 +3659,15 @@ class ChatPanel(QtWidgets.QWidget):
         if c.context:
             used, mx = c.context
             pct = 100.0 * used / mx
-            self.ring.set(pct, "Context  %d%%\n%s of %s tokens%s" % (
+            self.ring.set(pct, "Context  %d%%\n%s of %s tokens%s\nClick for details" % (
                 round(pct), _k(used), _k(mx), "\nClaude will compact soon - or type /compact" if pct > 65 else ""))
         else:
-            self.ring.set(None, "Context - after the first reply")
+            self.ring.set(None, "Context - after the first reply\nClick for details")
         self.tasks_label.setText("%d background task%s" % (len(c.tasks), "s" if len(c.tasks) > 1 else "")
                                  if c.tasks else "")
         self.tasks_label.setToolTip("\n".join(c.tasks.values()))
         self.status.setText("")
+        self.refresh_inspector()
 
     def rate_limit(self, info, convo=None):
         """Plan usage from the CLI: warn before the limit, say plainly when it's hit."""
@@ -3837,6 +3942,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._spin += 1
         if self.cur is not None and self._spin % 4 == 0:
             self.cur.tick_working(self._spin // 4)
+            if self.cur.agents.running():
+                self.refresh_inspector()             # running agents' time (the pane only redraws every 5 s)
         for i in range(self.list.count()):
             it = self.list.item(i)
             if it.data(QtCore.Qt.UserRole + 2) == "spin":
