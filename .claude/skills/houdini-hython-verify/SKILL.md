@@ -29,7 +29,7 @@ hython hou_tools.py compare FILE.hipnc NODE_A NODE_B 5 20 40  # worst point dist
 
 A test script, for builders and fixes:
 ```python
-import sys; sys.path.insert(0, r"P:\Project\Houdini Snippet Shelf\.claude\skills\houdini-hython-verify")
+import sys; sys.path.insert(0, r"P:\Project\plug-houdini-lab\.claude\skills\houdini-hython-verify")
 from hou_tools import *
 hou.hipFile.clear(suppress_save_prompt=True); hou.playbar.setFrameRange(1, 40)
 obj = hou.node("/obj"); before = child_names(obj)

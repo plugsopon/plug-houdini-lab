@@ -27,7 +27,8 @@ if sys.argv[1:] == ["--synthetic"]:      # Plug's real Houdini chats are mostly 
     sys.argv = sys.argv[:1] + [path]
 
 path = sys.argv[1] if len(sys.argv) > 1 else max(
-    glob.glob(os.path.join(os.path.expanduser("~"), ".claude", "projects", "*Houdini-Snippet-Shelf*", "*.jsonl")),
+    [p for k in ("*plug-houdini-lab*", "*Houdini-Snippet-Shelf*")     # new folder name, + transcripts from before the rename
+     for p in glob.glob(os.path.join(os.path.expanduser("~"), ".claude", "projects", k, "*.jsonl"))],
     key=os.path.getsize)
 msgs = CMP.read_messages(path)
 # the ~25K-token stretch where Plug himself wrote the most ids: the check has something to check

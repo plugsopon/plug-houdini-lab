@@ -12,8 +12,8 @@ The shelf exists in THREE places and they must move together:
 | Where | Holds |
 |---|---|
 | Artifact https://claude.ai/artifact/3qTbGYMJKu4Y8174uEWovB | every version of every technique (the source of truth) |
-| `P:\Project\Houdini Snippet Shelf\page\houdini-snippet-shelf.html` | the page as last published |
-| `P:\Project\Houdini Snippet Shelf\techniques\` + GitHub `plugsopon/houdini-snippet-shelf` (private) | latest version of each technique, as files |
+| `P:\Project\plug-houdini-lab\page\houdini-snippet-shelf.html` | the page as last published |
+| `P:\Project\plug-houdini-lab\techniques\` + GitHub `plugsopon/plug-houdini-lab` (private) | latest version of each technique, as files |
 
 Plug can also edit on the page itself, so the live artifact may be newer than the repo. Always start from the live artifact.
 
@@ -36,7 +36,7 @@ All data edits go through `shelf.py` (next to this file). Never hand-edit the `l
    - Renaming a technique (`name`) renames its `techniques/` folder. After export, `git rm -r` the old folder that `export` reports as no longer in the page. Never change an `id`.
    - New technique: add `name`, `category`, `type` (`Sop`/`Object`/...), optional `insert_after`.
    - `python shelf.py list <page.html>` shows ids, categories and file ids.
-4. **Build:** `python shelf.py add <live.html> spec.json "P:\Project\Houdini Snippet Shelf\page\houdini-snippet-shelf.html"`
+4. **Build:** `python shelf.py add <live.html> spec.json "P:\Project\plug-houdini-lab\page\houdini-snippet-shelf.html"`
 5. **Check:** `python shelf.py diff <live.html> <page.html>` must list ONLY the technique you touched.
 6. **Publish:** `Artifact` publish, `file_path` = the page file, `url` = the artifact url, a short `label`. No `icon`, no `capabilities` (the stored ones carry over).
    The FX AI chat in Houdini has the Artifact tool (it launches the CLI with
@@ -45,10 +45,10 @@ All data edits go through `shelf.py` (next to this file). Never hand-edit the `l
    is behind. Never silently skip this step — v006/v007 sat unpublished for a day that way.
 7. **Export + push:**
    ```
-   python shelf.py export "P:\Project\Houdini Snippet Shelf\page\houdini-snippet-shelf.html" "P:\Project\Houdini Snippet Shelf"
-   git -C "P:\Project\Houdini Snippet Shelf" add page techniques hip
-   git -C "P:\Project\Houdini Snippet Shelf" commit -m "<technique>: <version> - <what>"
-   git -C "P:\Project\Houdini Snippet Shelf" push
+   python shelf.py export "P:\Project\plug-houdini-lab\page\houdini-snippet-shelf.html" "P:\Project\plug-houdini-lab"
+   git -C "P:\Project\plug-houdini-lab" add page techniques hip
+   git -C "P:\Project\plug-houdini-lab" commit -m "<technique>: <version> - <what>"
+   git -C "P:\Project\plug-houdini-lab" push
    ```
    New `.hipnc` scenes for the technique go in `hip\<topic>\` and are committed too.
 8. **Reply to Plug in Thai.** Say what's in the version and the measured result. Say it is untested in 20.5, since he pastes at Framestore on 20.5.
