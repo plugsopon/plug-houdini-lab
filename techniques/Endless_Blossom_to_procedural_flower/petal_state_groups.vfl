@@ -1,0 +1,4 @@
+// Petal state (tutorial 13:33-14:54). Runs at the TIME-SHIFTED frame: the loop's Time Shift is downstream of this node.
+int ef = chi("end_frame");
+i@group_anim = @Frame < ef;
+i@group_volume_source = @Frame == ef;

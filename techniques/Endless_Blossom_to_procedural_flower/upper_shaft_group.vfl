@@ -1,0 +1,2 @@
+// manual-selection stand-in: upper half of the main shaft (tutorial 6:48 picks these points by hand)
+i@group_upper_shaft = (i@group_shaft==1 && -@P.z > 0.55) ? 1 : 0;

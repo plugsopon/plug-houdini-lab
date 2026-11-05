@@ -8,6 +8,9 @@ Skills in `.claude/skills/` — use them:
 - `houdini-builder-script` — writing any paste-able Python that creates nodes
 - `houdini-hython-verify` — checking scripts / .hipnc files headlessly before handing them over
 - `houdini-shelf-publish` — adding a technique or version to the shelf (artifact + folder + git)
+- `houdini-flower-endless-blossom` — building a procedural flower (petal → rig → loop → Vellum → COP maps →
+  Karma) from the Endless Blossom technique on the shelf: which builder to paste, which hython script runs
+  what, and the measured traps
 
 The Artifact tool IS available in the FX AI chat inside Houdini (brother_chat sets
 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`, 2026-10-03). Publishing the shelf page is part of every

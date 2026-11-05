@@ -13,7 +13,7 @@ The shelf exists in THREE places and they must move together:
 |---|---|
 | Artifact https://claude.ai/artifact/3qTbGYMJKu4Y8174uEWovB | every version of every technique (the source of truth) |
 | `P:\Project\plug-houdini-lab\page\houdini-snippet-shelf.html` | the page as last published |
-| `P:\Project\plug-houdini-lab\techniques\` + GitHub `plugsopon/plug-houdini-lab` (private) | latest version of each technique, as files |
+| `P:\Project\plug-houdini-lab\techniques\` + GitHub `plugsopon/plug-houdini-lab` (public) | latest version of each technique, as files |
 
 Plug can also edit on the page itself, so the live artifact may be newer than the repo. Always start from the live artifact.
 

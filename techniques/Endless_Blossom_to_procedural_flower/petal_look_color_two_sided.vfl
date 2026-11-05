@@ -1,0 +1,13 @@
+// Two-sided petal look (EB-107). Measured: ~95% of head faces have their normal pointing TOWARD the flower axis,
+// so "inner" = the shell offset along +N, "outer" = the shell offset along -N with flipped winding. Colours authored sRGB -> linear.
+float v = clamp(v@uv.y, 0, 1);              // feather uv.y: 0 = petal base, 1 = tip
+vector c;
+if (i@inner) {      // reference: inner faces glow yellow-orange -> red -> magenta, violet only at the very tip
+    vector a = {1.00, 0.80, 0.28}, b = {1.00, 0.42, 0.10}, m = {0.92, 0.18, 0.42}, t = {0.55, 0.40, 1.00};
+    c = v < 0.45 ? lerp(a, b, smooth(0.0, 0.45, v)) : v < 0.75 ? lerp(b, m, smooth(0.45, 0.75, v)) : lerp(m, t, smooth(0.75, 1.0, v));
+} else {            // outer faces: previous v031 ramp
+    vector base = {1.00, 0.70, 0.20}, mid = {0.95, 0.25, 0.25}, body = {0.42, 0.36, 1.00}, tip = {0.62, 0.56, 1.00};
+    c = v < 0.38 ? lerp(base, mid, smooth(0.18, 0.38, v)) : v < 0.6 ? lerp(mid, body, smooth(0.38, 0.6, v)) : lerp(body, tip, smooth(0.6, 1.0, v));
+}
+// veins moved to the MaterialX shader (EB-110): point Cd aliased ~65 stripes/petal away
+v@Cd = pow(c, 2.2);

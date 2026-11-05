@@ -23,6 +23,7 @@ where to paste each file and what it was tested with.
 | [Subframe for changing topology](techniques/Subframe_for_changing_topology/) | SOP | Subframes for motion blur when the point count changes |
 | [Surface distance from an edge group](techniques/Surface_distance_from_an_edge_group/) | SOP | Distance across the surface from an edge group |
 | [My First Shot](techniques/My_First_Shot/) | OBJ | A starter shot setup |
+| [Endless Blossom → procedural flower](techniques/Endless_Blossom_to_procedural_flower/) | OBJ (SOP + COP + LOP) | A whole flower pipeline: feather-tool petal → KineFX poses → golden-angle loop → Vellum petal fall → endless loop, Copernicus petal maps, MaterialX + Karma. Reconstruction of Entagma's *Endless Blossom*; reviewed scene + media in [`hip/endless_blossom/`](hip/endless_blossom/), skill in `.claude/skills/houdini-flower-endless-blossom/` |
 
 ### Using one
 
