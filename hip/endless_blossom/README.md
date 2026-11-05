@@ -17,7 +17,8 @@ Technique notes are in Thai on the shelf page; this file is the provenance recor
 | `media/karma_v052b_loop_boundary_f44_f1_f2.png` | `f15b38f9a96468ad` | loop seam f44 → f1 → f2 (mean abs diff 5.24/255; consecutive frames 4.21–5.89) |
 | `media/final_v052b_vs_TEACHERrender_f12.png` | `ce3b74dbc25e30d5` | left: Entagma's own scene rendered headless, read-only, 6 spp · right: ours. whole-frame 2.23, head 4.42 (mean abs/255) |
 | `media/01_candidate_overview.png`, `02_pv_blossom_column_detail.png` | `7eb4952f768d6821`, `3c6368f571a3014e` | HEADLESS SOURCE DIAGRAMS of the candidate graph drawn from the saved node data (SVG → PNG). Not native Houdini screenshots. |
-| `media/preview_480.jpg` | `4ee123542896aa52` | 480² JPEG of the still for the shelf card |
+| `media/preview_480.jpg` | `4ee123542896aa52` | 480² JPEG of the still; embedded in the shelf page as the card `previewImage` (data URI) |
+| `media/card_endless_blossom.png`, `media/page_endless_blossom_selected.png` | `dde67804d2f3e8a2`, `0fa12304c28db24e` | screenshots of the built page served locally: the card and the selected technique with its preview (480×480 decoded). Other cards' `/_blob/` images do not load there because they live on the artifact host |
 | `tex_v051/{diffuse,rough_sss,normal,opacity,sss}.png` | `30682be124b3a872`, `5064060e79f83ced`, `96224d0771852196`, `066d0bfd091bbb3c`, `d897e6462bc2cfd3` | the five reviewed Copernicus maps (1024², our network, Entagma curves). `verify_endless_blossom.py` with an ASSET_DIR re-bakes them from the builder and they come out byte-identical. Also usable as ready-made maps (`TEX_DIR`) if you do not want to cook. |
 
 The "Houdini" mark in every frame is the Apprentice watermark.
@@ -33,9 +34,28 @@ The "Houdini" mark in every frame is the Apprentice watermark.
   (bend 1e2, mass/thickness/compress groups), the Vellum source placement (locked solver + Vellum Source DOP in
   `forces`), the collider carve/endcap, the whole Copernicus texture recipe, the MaterialX petal material,
   the Entagma stem + fur recipe, three spot lights and the 80 mm f/0.35 camera.
-- **Not in this repo:** Entagma's `.hiplc` files, textures, `Scene.usdc`, petal geometry. Redistribution rights
-  for those were never stated on the download page, so nothing of theirs is bundled; the links above are the
-  source.
+- **Not in this repo:** Entagma's `.hiplc` files, textures, `Scene.usdc`, petal geometry, the three input curves.
+  Redistribution rights for those were never stated on the download page, so none of their files is bundled; the
+  links above are the source. We make no broader rights claim than that.
+- **Derived from Entagma inputs (labelled, not their files):** the reviewed media and the five `tex_v051` maps
+  were produced by OUR network with `INPUT_CURVES = "asset"`, i.e. from Entagma's petal/stem curves. They are
+  outputs, not copies of Entagma files — but the petal shape you see in them comes from those curves.
+
+## Archival HIP content audit (read-only, 2026-11-05)
+
+`hip_content_audit.py` loaded `EB_full_v052bL3_layout.hipnc` in hython, read every Data parm, lock flag, HDA
+definition and file-path parm, cooked no SOP output and saved nothing:
+
+| check | result |
+|---|---|
+| geometry embedded in the file (stash / Data parms) | 1: `EB_candidate/petal_shape_curves.savedstashgeo`, 12 pts / 3 Bézier — **our AI-drawn curves**; point positions match none of Entagma's curve1/2/3 |
+| hard- or soft-locked SOPs (frozen geometry) | none |
+| embedded HDA definitions | none |
+| Entagma inputs | referenced by **path only** (`ASSET_entagma_curve1/2/3.bgeo`, and the optional teacher-texture branch of the five `ent_tex_*` expressions); not stored |
+| raw text | the string `Endless_Blossom_2025` occurs 3× (node comments naming the source file / a Vellum checkpoint path label) — metadata, no data |
+
+The paths in the file are the author's machine paths; opening it elsewhere gives empty asset/cache/texture reads
+(the shelf builder is the portable way).
 
 ## Measured (hython 21.0.671, from the benchmark record)
 
