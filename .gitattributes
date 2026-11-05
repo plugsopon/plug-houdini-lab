@@ -8,3 +8,6 @@
 *.hip   binary
 *.hipnc binary
 *.hiplc binary
+# generated skill mirrors for Codex: keep LF so their hashes match on every machine
+*.yaml text eol=lf
+.mirror-source text eol=lf
