@@ -1,0 +1,3 @@
+interface:
+  display_name: "houdini hython verify"
+  short_description: "Use when a Houdini builder script, VEX wrangle or .hipnc fix needs checking before it is handed to Plug, wh..."

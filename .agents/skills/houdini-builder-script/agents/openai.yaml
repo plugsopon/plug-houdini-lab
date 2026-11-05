@@ -1,0 +1,3 @@
+interface:
+  display_name: "houdini builder script"
+  short_description: "Use when writing a Python Shell script that creates Houdini nodes for Plug - a 'rebuild everything' builder..."

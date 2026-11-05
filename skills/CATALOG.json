@@ -1,0 +1,67 @@
+{
+ "catalog_version": 1,
+ "repo": "plugsopon/plug-houdini-lab",
+ "canonical": ".claude/skills",
+ "codex_mirror": ".agents/skills",
+ "how": {
+  "claude-code": "opens the project folder: .claude/skills is loaded as project skills (Dremzo Code Claude engine, FX AI chat in Houdini)",
+  "codex": "opens the project folder: .agents/skills (generated mirror, same content as .claude/skills)",
+  "dremzo-code get_skill": "the dremzo MCP tool get_skill lists this project's skills for the chat's project and reads one by name (Gemini, GPT, Antigravity, Claude)",
+  "regenerate": "python tools/skills_catalog.py   (then commit skills/CATALOG.json and .agents/skills)"
+ },
+ "skills": [
+  {
+   "name": "houdini-builder-script",
+   "folder": "houdini-builder-script",
+   "description": "Use when writing a Python Shell script that creates Houdini nodes for Plug - a \"rebuild everything\" builder, a patch that inserts or rewires nodes, or any \"paste this and it builds the setup\" request (เหมือน FX Template).",
+   "version": null,
+   "path": ".claude/skills/houdini-builder-script",
+   "skill_md_sha256": "cfd032e8543eadfdf3212eddc35a28ee283579a7d5e7a737a46e2b4d98a7f9ea",
+   "content_id": "62f2a9ca104d",
+   "files": {
+    "SKILL.md": "cfd032e8543eadfdf3212eddc35a28ee283579a7d5e7a737a46e2b4d98a7f9ea",
+    "builder_template.py": "e9af13c0d964afa15997d5d47a05865a2820c69f16c28f256378361b110f03ba"
+   }
+  },
+  {
+   "name": "houdini-flower-endless-blossom",
+   "folder": "houdini-flower-endless-blossom",
+   "description": "Use whenever Plug wants a procedural flower / petal / blossom / bloom in Houdini - petals that open on a rig, a blossom that keeps growing in a loop, petals falling with Vellum, procedural petal textures in Copernicus, a Karma flower look - or asks to reuse, extend, re-render or version the \"Endless Blossom → procedural flower\" technique on the Houdini Snippet Shelf. Also use for any Feather-tool petal, golden-angle copy loop, time-offset blossom, \"endless loop\" of cached sim copies, or a flower-shaped Vellum emission even when the word flower is not said. It routes to the builder/verify/publish skills and carries the measured traps.",
+   "version": null,
+   "path": ".claude/skills/houdini-flower-endless-blossom",
+   "skill_md_sha256": "688e8154d36fe74a4eea381be7dd2760e0a163c5d9090a3074c1c43760b5d97a",
+   "content_id": "4628879a96be",
+   "files": {
+    "SKILL.md": "688e8154d36fe74a4eea381be7dd2760e0a163c5d9090a3074c1c43760b5d97a",
+    "references/lessons.md": "8adafaeb0dadf5dc7dec23af4d022e480f09f738bce8e294ccffe5574db427db",
+    "references/pipeline.md": "e04c714023976a2629871760cb404fdd37888f1c1ab63a3dec2d8a522def2fa6"
+   }
+  },
+  {
+   "name": "houdini-hython-verify",
+   "folder": "houdini-hython-verify",
+   "description": "Use when a Houdini builder script, VEX wrangle or .hipnc fix needs checking before it is handed to Plug, when debugging one of his .hip files (\"ช่วยดูไฟล์นี้หน่อย\"), or when a claim like \"matches the sim\" / \"0 error\" needs a number behind it.",
+   "version": null,
+   "path": ".claude/skills/houdini-hython-verify",
+   "skill_md_sha256": "ffcc1b4a60c606f09fae48aa89f72d2f47369927b747684f7f75b30a3d65c895",
+   "content_id": "aa2bde10cef2",
+   "files": {
+    "SKILL.md": "ffcc1b4a60c606f09fae48aa89f72d2f47369927b747684f7f75b30a3d65c895",
+    "hou_tools.py": "e4b057906480372c741f17158b6afb4c5d28d0ccf81951a5ed0e68f21a491d16"
+   }
+  },
+  {
+   "name": "houdini-shelf-publish",
+   "folder": "houdini-shelf-publish",
+   "description": "Use when adding a new technique, a new version, or a changed file to Plug's Houdini Snippet Shelf, or when he says \"เพิ่มเข้า Snippet Shelf\" / \"add this to the shelf\" after a Houdini fix, VEX snippet or builder script.",
+   "version": null,
+   "path": ".claude/skills/houdini-shelf-publish",
+   "skill_md_sha256": "faaba773c320249955dcfd96d8b4454d6cbffdfd9edf3ec6036037e20f6d8f73",
+   "content_id": "2a660a443831",
+   "files": {
+    "SKILL.md": "faaba773c320249955dcfd96d8b4454d6cbffdfd9edf3ec6036037e20f6d8f73",
+    "shelf.py": "30eb50a64bf3bf3ac23471c758f905325460cf6b08b98aed2dbca462030f785b"
+   }
+  }
+ ]
+}

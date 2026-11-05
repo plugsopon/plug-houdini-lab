@@ -34,6 +34,17 @@ where to paste each file and what it was tested with.
 
 The builders never save your scene; undo with Ctrl+Z.
 
+## Skills — the same ones in every client
+
+Plug's working knowledge for this Lab is written as skills in [`.claude/skills/`](.claude/skills/)
+(builder script, hython verify, shelf publish, the Endless Blossom flower). Whoever opens this folder sees
+them: Claude Code loads them as project skills (Dremzo Code's Claude engine, the FX AI chat in Houdini),
+Codex reads the generated mirror in [`.agents/skills/`](.agents/skills/), and Dremzo Code's `get_skill`
+tool reads them by name for GPT, Gemini and Antigravity. [`skills/CATALOG.json`](skills/CATALOG.json) is
+the generated index — a `content_id` per skill, so three clients can confirm they hold the same version.
+After editing a skill: `python tools/skills_catalog.py` (standard library only; `--check` to verify,
+`--probe <folder>` / `--fxai` to see what a client would find).
+
 ## FX AI: Claude inside Houdini
 
 [`mcp/`](mcp/) contains two pieces:

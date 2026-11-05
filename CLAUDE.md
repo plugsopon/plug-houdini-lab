@@ -12,6 +12,12 @@ Skills in `.claude/skills/` — use them:
   Karma) from the Endless Blossom technique on the shelf: which builder to paste, which hython script runs
   what, and the measured traps
 
+These skills are ONE catalog for every client: `skills/CATALOG.json` (name, description, files' sha256,
+`content_id`) and the Codex mirror `.agents/skills/` are generated from `.claude/skills/` by
+`python tools/skills_catalog.py` — run it after editing a skill and commit all three together
+(`--check` fails while they differ; `tests/test_skills_catalog.py`). Never edit a mirror. Dremzo Code's
+`get_skill` reads this project's skills by name for its other engines; FX AI sees them as project skills.
+
 The Artifact tool IS available in the FX AI chat inside Houdini (brother_chat sets
 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`, 2026-10-03). Publishing the shelf page is part of every
 shelf update — never stop at folder + git. If `Artifact` is genuinely missing, say so to Plug
