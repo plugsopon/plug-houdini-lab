@@ -58,12 +58,24 @@ class _Proc:
     def __getattr__(self, n): return _Any()
 
 
+REAL_QT = False
+
+
 def _load():
-    for n in ("hou", "PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"):
-        sys.modules.setdefault(n, _Mod(n))
-    pyside = sys.modules["PySide6"]
-    for n in ("QtCore", "QtGui", "QtWidgets"):
-        setattr(pyside, n, sys.modules["PySide6." + n])
+    """Real hou + PySide6 when present (hython: `hython -m unittest tests/test_fxai_native_guard.py`, with
+    QT_QPA_PLATFORM=offscreen); permissive stubs otherwise (plain Python). QProcess is replaced by a recorder either way."""
+    global REAL_QT
+    try:
+        import hou  # noqa: F401
+        from PySide6 import QtCore, QtGui, QtWidgets  # noqa: F401
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])  # noqa: F841
+        REAL_QT = True
+    except ImportError:
+        for n in ("hou", "PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"):
+            sys.modules[n] = _Mod(n)
+        pyside = sys.modules["PySide6"]
+        for n in ("QtCore", "QtGui", "QtWidgets"):
+            setattr(pyside, n, sys.modules["PySide6." + n])
     if HOUDINI not in sys.path:
         sys.path.insert(0, HOUDINI)
     import brother_chat
@@ -71,6 +83,7 @@ def _load():
 
 
 BC = _load()
+print("qt mode:", "REAL hou + PySide6" if REAL_QT else "stubs", file=sys.stderr)
 
 
 def junction(link: str, target: str) -> None:
