@@ -247,5 +247,87 @@ class LauncherRoot(Fixture):
                          {s["name"]: s["content_id"] for s in sc.scan(ROOT)})
 
 
+
+class Unreadable(unittest.TestCase):
+    """Root review 2026-11-06: os.path.isdir/lexists/exists swallow a PermissionError and answer False, so an unreadable
+    .claude or .claude/skills looked ABSENT, i.e. safe. Simulated in-process on an OWN fixture (no ACL change): the
+    primitives raise PermissionError for the denied paths, and the os.path helpers answer False there - exactly what
+    they do on a real access-denied folder."""
+
+    def setUp(self) -> None:
+        self.box = tempfile.mkdtemp(prefix="lab-deny-")
+        self.repo = os.path.join(self.box, "repo")
+        shutil.copytree(os.path.join(ROOT, ".claude", "skills"), os.path.join(self.repo, ".claude", "skills"))
+        os.makedirs(os.path.join(self.repo, ".git"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.box, ignore_errors=True)
+
+    def denied(self, *rels: str, list_only: bool = False):
+        from unittest import mock
+        deny = [os.path.normcase(os.path.join(self.repo, *r.split("/"))) for r in rels]
+        hit = lambda p: any(os.path.normcase(os.path.abspath(os.fspath(p))) == d or
+                            os.path.normcase(os.path.abspath(os.fspath(p))).startswith(d + os.sep) for d in deny)
+        real = {n: getattr(os, n) for n in ("stat", "lstat", "scandir", "listdir")}
+        realp = {n: getattr(os.path, n) for n in ("isdir", "exists", "lexists", "islink", "isfile")}
+
+        def raiser(name):
+            def f(p, *a, **k):
+                if hit(p):
+                    raise PermissionError(13, "Access is denied (simulated)", os.fspath(p))
+                return real[name](p, *a, **k)
+            return f
+
+        def falser(name):
+            return lambda p, *a, **k: False if hit(p) else realp[name](p, *a, **k)
+        names = ("scandir", "listdir") if list_only else ("stat", "lstat", "scandir", "listdir")
+        ps = [mock.patch.object(os, n, raiser(n)) for n in names]
+        if not list_only:
+            ps += [mock.patch.object(os.path, n, falser(n)) for n in realp]
+        return ps
+
+    def run_denied(self, fn, *rels, list_only=False):
+        ps = self.denied(*rels, list_only=list_only)
+        for p in ps:
+            p.start()
+        try:
+            return fn()
+        finally:
+            for p in reversed(ps):
+                p.stop()
+
+    def test_control_readable_fixture_is_clean(self) -> None:
+        self.assertEqual(sc.escapes(self.repo), [])
+        self.assertIsNone(sc.native_start_refusal(self.repo))
+
+    def test_unreadable_skills_root_fails_closed(self) -> None:
+        e = self.run_denied(lambda: sc.escapes(self.repo), ".claude/skills")
+        self.assertTrue(any("cannot be checked (PermissionError)" in x for x in e), e)
+        r = self.run_denied(lambda: sc.native_start_refusal(self.repo), ".claude/skills")
+        self.assertIsNotNone(r)
+        self.assertIn("UNSAFE_PROJECT_SKILL_PATH", r)
+        c = self.run_denied(lambda: sc.check(self.repo), ".claude/skills")
+        self.assertTrue(any("cannot be checked" in x for x in c), c)
+
+    def test_unreadable_dot_claude_fails_closed(self) -> None:
+        e = self.run_denied(lambda: sc.escapes(self.repo), ".claude")
+        self.assertTrue(any(x.startswith(".claude: cannot be checked") for x in e), e)
+
+    def test_unlistable_skills_root_is_reported(self) -> None:
+        e = self.run_denied(lambda: sc.escapes(self.repo), ".claude/skills", list_only=True)
+        self.assertTrue(any("cannot be listed" in x for x in e), e)
+
+    def test_unreadable_skill_folder_inside_is_reported(self) -> None:
+        e = self.run_denied(lambda: sc.escapes(self.repo), ".claude/skills/houdini-builder-script", list_only=True)
+        self.assertTrue(any("houdini-builder-script: cannot be listed" in x for x in e), e)
+
+    def test_no_skills_at_all_is_not_blocked(self) -> None:
+        bare = os.path.join(self.box, "bare")
+        os.makedirs(os.path.join(bare, ".git"))
+        os.makedirs(os.path.join(bare, ".claude"))
+        self.assertEqual(sc.escapes(bare), [])
+        self.assertIsNone(sc.native_start_refusal(bare))
+
+
 if __name__ == "__main__":
     unittest.main()
