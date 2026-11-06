@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 
@@ -96,6 +97,18 @@ def _is_link(p: str) -> bool:
         return True
 
 
+def _state(p: str, follow: bool):
+    """(stat result, None), (None, "absent"), or (None, "cannot be checked (<Error>)"). os.path.isdir/exists/lexists
+    swallow EVERY OSError and answer False, so an unreadable folder would look absent - i.e. safe. Only "not found" /
+    "not a directory" count as absent here; any other error is reported (fail closed). Root review 2026-11-06."""
+    try:
+        return (os.stat(p) if follow else os.lstat(p)), None
+    except (FileNotFoundError, NotADirectoryError):
+        return None, "absent"
+    except OSError as e:
+        return None, f"cannot be checked ({e.__class__.__name__})"
+
+
 def escapes(root: str, canon_dir: str = CANON) -> list[str]:
     """Links under <root>/<canon_dir> (that folder, its parent, or anything inside) that lead OUT of the repo, or cannot
     be resolved. Claude Code's own loader follows links (measured on claude.exe 2.1.226), so FX AI started in a checkout
@@ -106,6 +119,11 @@ def escapes(root: str, canon_dir: str = CANON) -> list[str]:
     rel_parts = canon_dir.split(os.sep)
     for i in range(1, len(rel_parts) + 1):   # .claude, then .claude/skills
         p = os.path.join(root, *rel_parts[:i])
+        _, why = _state(p, False)
+        if why == "absent":
+            return out   # nothing there: Claude's loader skips it too
+        if why:
+            return [f"{'/'.join(rel_parts[:i])}: {why}"]
         if _is_link(p):
             try:
                 rp = os.path.realpath(p, strict=True)
@@ -114,8 +132,13 @@ def escapes(root: str, canon_dir: str = CANON) -> list[str]:
             if not _inside(rroot, rp):
                 return [f"{'/'.join(rel_parts[:i])}: a link that leads outside the repo"]
     base = os.path.join(root, canon_dir)
-    if not os.path.isdir(base):
+    st, why = _state(base, True)
+    if why == "absent":
         return out
+    if why:
+        return [f"{canon_dir.replace(os.sep, '/')}: {why}"]
+    if not stat.S_ISDIR(st.st_mode):
+        return out   # a file named "skills" holds no skills
 
     def walk(d: str, rel: str, depth: int) -> None:
         if depth > 12:
@@ -137,7 +160,10 @@ def escapes(root: str, canon_dir: str = CANON) -> list[str]:
                 if not _inside(rroot, rp):
                     out.append(f"{r}: a link that leads outside the repo")
                     continue
-                if os.path.isdir(rp):
+                st2, why2 = _state(rp, True)
+                if why2 and why2 != "absent":
+                    out.append(f"{r}: {why2}")
+                elif st2 is not None and stat.S_ISDIR(st2.st_mode):
                     walk(rp, r, depth + 1)
             elif e.is_dir(follow_symlinks=False):
                 walk(e.path, r, depth + 1)
@@ -304,6 +330,40 @@ def check(root: str) -> list[str]:
             if entry not in mirrors:
                 problems.append(f"mirror without a canonical skill: {MIRROR}/{entry}")
     return [p.replace(os.sep, "/") for p in problems]
+
+
+def native_owners(cwd: str) -> list[str]:
+    """The folders whose .claude/skills Claude Code's own loader would auto-load for a session started in <cwd>: cwd and
+    each parent, stopping BEFORE home and AT the git root (inclusive). A .git entry that cannot be checked does not stop
+    the walk (more folders are checked, never fewer)."""
+    out: list[str] = []
+    home = os.path.normcase(os.path.abspath(os.path.expanduser("~")))
+    d = os.path.abspath(cwd)
+    while os.path.normcase(d) != home:
+        out.append(d)
+        if _state(os.path.join(d, ".git"), False)[0] is not None:
+            break
+        up = os.path.dirname(d)
+        if up == d:
+            break
+        d = up
+    return out
+
+
+def native_start_refusal(cwd: str, add_dirs=()) -> str | None:
+    """Why Claude Code (FX AI) must NOT be started in <cwd>, or None. Checks every folder Claude's own loader reads
+    project skills from: native_owners(cwd), plus each --add-dir folder (static trace of claude.exe 2.1.226: the
+    --add-dir list becomes additionalDirectoriesForClaudeMd, whose <dir>/.claude/skills the skill loader also loads).
+    Uses escapes(): fail closed, nothing a link points to outside is read. Not a sandbox - Claude's tools can still
+    read what they are allowed to; this only refuses the auto-load at start."""
+    for owner in list(native_owners(cwd)) + [os.path.abspath(a) for a in add_dirs]:
+        bad = escapes(owner)
+        if bad:
+            where = owner.replace(os.sep, "/")
+            return ("UNSAFE_PROJECT_SKILL_PATH: Claude was not started. Under " + where + ": " + "; ".join(bad[:3])
+                    + ". Claude Code loads every skill there by itself. Nothing was sent and nothing was changed."
+                    + " To continue: replace that link with a real folder (or fix its permissions), or open another folder.")
+    return None
 
 
 def claude_native_dirs(cwd: str) -> list[str]:
