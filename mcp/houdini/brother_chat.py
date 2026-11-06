@@ -110,6 +110,22 @@ def mcp_config():
     return out
 
 
+def native_skill_refusal(cwd, add_dirs=()):
+    """R56: Claude Code loads <dir>/.claude/skills by itself (cwd up to the git root, and each --add-dir folder) and
+    follows links out of it. When that cannot be proven to stay inside its folder, FX AI does not start claude.
+    The check is tools/skills_catalog.native_start_refusal (fail closed; nothing a link points to is read).
+    If the check itself cannot run, that is a refusal too."""
+    try:
+        tools = os.path.join(REPO, "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import skills_catalog
+        return skills_catalog.native_start_refusal(cwd, add_dirs)
+    except Exception as e:  # noqa: BLE001
+        return ("UNSAFE_PROJECT_SKILL_PATH: Claude was not started - the project skills could not be checked (%s)."
+                % e.__class__.__name__)
+
+
 def claude_env():
     """Houdini's environment minus Claude-Code child markers (a child that inherits CLAUDECODE /
     CLAUDE_CODE_SESSION_ID etc. thinks it is a nested SDK child and fails with "Not logged in")
@@ -651,6 +667,9 @@ class ClaudeSession(QtCore.QObject):
         hip_dir = os.path.dirname(hou.hipFile.path())
         if os.path.isdir(hip_dir):
             args += ["--add-dir", hip_dir]
+        refusal = native_skill_refusal(self.cwd, [hip_dir] if os.path.isdir(hip_dir) else [])
+        if refusal:   # before any process exists: nothing spawned, nothing sent
+            raise RuntimeError(refusal)
         p = QtCore.QProcess(self)
         p.setProgram(exe)
         p.setArguments(args)
