@@ -155,5 +155,97 @@ class Fixture(unittest.TestCase):
         self.assertIn("not installed", out)
 
 
+def junction(link: str, target: str) -> None:
+    subprocess.run(["cmd", "/c", "mklink", "/J", link, target], check=True, capture_output=True)
+
+
+@unittest.skipUnless(os.name == "nt", "junction fixtures are Windows-only")
+class LinksOut(unittest.TestCase):
+    """R56 SV3: Claude Code (FX AI) follows links under .claude/skills. The tool must say so without reading what a link
+    points to outside the repo (in-process open() spy), and --check must fail."""
+
+    def setUp(self) -> None:
+        self.box = tempfile.mkdtemp(prefix="lab-links-")
+        self.repo = os.path.join(self.box, "repo")
+        shutil.copytree(os.path.join(ROOT, ".claude", "skills"), os.path.join(self.repo, ".claude", "skills"))
+        os.makedirs(os.path.join(self.repo, ".git"))
+        self.outside = os.path.join(self.box, "outside", "zz-outside")
+        os.makedirs(self.outside)
+        with open(os.path.join(self.outside, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: zz-outside-sentinel\ndescription: owned dummy\n---\nbody\n")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.box, ignore_errors=True)
+
+    def opened_during(self, fn):
+        import builtins
+        seen: list[str] = []
+        real = builtins.open
+
+        def spy(p, *a, **k):
+            seen.append(os.path.abspath(str(p)))
+            return real(p, *a, **k)
+        builtins.open = spy
+        try:
+            res = fn()
+        finally:
+            builtins.open = real
+        return res, [p for p in seen if os.path.normcase(p).startswith(os.path.normcase(os.path.dirname(self.outside)))]
+
+    def test_skill_folder_link_out_is_reported_not_read(self) -> None:
+        sc.write_all(self.repo)
+        junction(os.path.join(self.repo, ".claude", "skills", "evil"), self.outside)
+        r, outside_opened = self.opened_during(lambda: sc.probe(self.repo))
+        self.assertEqual(outside_opened, [], "probe opened a file outside the repo")
+        self.assertTrue(any("evil: a link that leads outside the repo" in p for p in r["problems"]), r["problems"])
+        self.assertNotIn("zz-outside-sentinel", {s["name"] for s in r["skills"]})
+        self.assertEqual(len(r["skills"]), len(sc.scan(ROOT)))           # the contained skills are still listed
+        probs, outside_opened = self.opened_during(lambda: sc.check(self.repo))
+        self.assertEqual(outside_opened, [])
+        self.assertTrue(any("leads outside" in p for p in probs), probs)
+        code, out = run("--check", "--root", self.repo)
+        self.assertEqual(code, 1, out)
+
+    def test_dangling_skills_root_is_reported(self) -> None:
+        shutil.rmtree(os.path.join(self.repo, ".claude", "skills"))
+        gone = os.path.join(self.box, "gone")
+        os.makedirs(gone)
+        junction(os.path.join(self.repo, ".claude", "skills"), gone)
+        os.rmdir(gone)
+        r = sc.probe(self.repo)
+        self.assertEqual(r["skills"], [])
+        self.assertTrue(any(".claude/skills: a link whose target is missing" in p for p in r["problems"]), r["problems"])
+
+    def test_skills_root_link_out_lists_nothing(self) -> None:
+        shutil.rmtree(os.path.join(self.repo, ".claude", "skills"))
+        junction(os.path.join(self.repo, ".claude", "skills"), os.path.dirname(self.outside))
+        r, outside_opened = self.opened_during(lambda: sc.probe(self.repo))
+        self.assertEqual(outside_opened, [])
+        self.assertEqual(r["skills"], [])
+        self.assertTrue(any(".claude/skills: a link that leads outside the repo" in p for p in r["problems"]), r["problems"])
+
+    def test_claude_native_dirs_stop_at_the_git_root(self) -> None:
+        self.assertEqual(sc.claude_native_dirs(self.repo), [os.path.join(self.repo, ".claude", "skills").replace(os.sep, "/")])
+
+
+class LauncherRoot(Fixture):
+    """FX AI's launcher (mcp/houdini/brother_chat.py) runs claude with cwd = the checkout three folders above it."""
+
+    def test_launcher_root_is_the_checkout_at_fxai_home(self) -> None:
+        sc.write_all(self.tmp)
+        pkg = os.path.join(self.tmp, "fx_ai.json")
+        with open(pkg, "w", encoding="utf-8") as f:
+            json.dump({"env": [{"FXAI_HOME": self.tmp.replace("\\", "/")}]}, f)
+        r = sc.fxai_probe(pkg)
+        self.assertIsNone(r["launcher"])
+        self.assertTrue(any("brother_chat.py" in p for p in r["problems"]), r["problems"])
+        os.makedirs(os.path.join(self.tmp, "mcp", "houdini"))
+        open(os.path.join(self.tmp, "mcp", "houdini", "brother_chat.py"), "w").close()
+        r = sc.fxai_probe(pkg)
+        self.assertEqual(os.path.normcase(r["launcher_root"]), os.path.normcase(self.tmp.replace("\\", "/")))
+        self.assertEqual({s["name"]: s["content_id"] for s in r["probe"]["skills"]},
+                         {s["name"]: s["content_id"] for s in sc.scan(ROOT)})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -79,15 +79,98 @@ def walk_files(base: str) -> list[str]:
     return sorted(out)
 
 
+def _inside(base: str, p: str) -> bool:
+    b, q = os.path.normcase(base), os.path.normcase(p)
+    return q.startswith(b.rstrip("\\/") + os.sep)
+
+
+def _is_link(p: str) -> bool:
+    """A symlink OR a Windows junction (os.path.islink is False for junctions, and os.path.isjunction is 3.12+ while
+    hython may be 3.11): the entry resolves somewhere other than its own name inside its real parent, or is dangling."""
+    if os.path.islink(p) or (os.path.lexists(p) and not os.path.exists(p)):
+        return True
+    try:
+        here = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
+        return os.path.normcase(os.path.realpath(p)) != os.path.normcase(here)
+    except OSError:
+        return True
+
+
+def escapes(root: str, canon_dir: str = CANON) -> list[str]:
+    """Links under <root>/<canon_dir> (that folder, its parent, or anything inside) that lead OUT of the repo, or cannot
+    be resolved. Claude Code's own loader follows links (measured on claude.exe 2.1.226), so FX AI started in a checkout
+    with one would load a skill from elsewhere. Read-only and fail closed: only lstat/realpath run on a link; nothing it
+    points to outside the repo is listed, stat'ed or read. Empty = every path stays inside."""
+    rroot = os.path.realpath(root)
+    out: list[str] = []
+    rel_parts = canon_dir.split(os.sep)
+    for i in range(1, len(rel_parts) + 1):   # .claude, then .claude/skills
+        p = os.path.join(root, *rel_parts[:i])
+        if _is_link(p):
+            try:
+                rp = os.path.realpath(p, strict=True)
+            except OSError:
+                return [f"{'/'.join(rel_parts[:i])}: a link whose target is missing"]
+            if not _inside(rroot, rp):
+                return [f"{'/'.join(rel_parts[:i])}: a link that leads outside the repo"]
+    base = os.path.join(root, canon_dir)
+    if not os.path.isdir(base):
+        return out
+
+    def walk(d: str, rel: str, depth: int) -> None:
+        if depth > 12:
+            out.append(f"{rel}: too deep to check")
+            return
+        try:
+            entries = sorted(os.scandir(d), key=lambda e: e.name)
+        except OSError as e:
+            out.append(f"{rel}: cannot be listed ({e.__class__.__name__})")
+            return
+        for e in entries:
+            r = f"{rel}/{e.name}"
+            if _is_link(e.path):
+                try:
+                    rp = os.path.realpath(e.path, strict=True)
+                except OSError:
+                    out.append(f"{r}: a link whose target is missing")
+                    continue
+                if not _inside(rroot, rp):
+                    out.append(f"{r}: a link that leads outside the repo")
+                    continue
+                if os.path.isdir(rp):
+                    walk(rp, r, depth + 1)
+            elif e.is_dir(follow_symlinks=False):
+                walk(e.path, r, depth + 1)
+    walk(base, canon_dir.replace(os.sep, "/"), 0)
+    return out
+
+
+def _contained_skill(root: str, d: str) -> bool:
+    """The skill folder and its SKILL.md both resolve inside the repo — checked BEFORE anything is read."""
+    try:
+        rd = os.path.realpath(d, strict=True)
+        rf = os.path.realpath(os.path.join(d, "SKILL.md"), strict=True)
+    except OSError:
+        return False
+    rroot = os.path.realpath(root)
+    return _inside(rroot, rd) and _inside(rd, rf)
+
+
 def scan(root: str, canon_dir: str = CANON) -> list[dict]:
-    """Every skill under <root>/<canon_dir>: name, description, files with sha256, content_id."""
+    """Every skill under <root>/<canon_dir>: name, description, files with sha256, content_id. A skill folder (or its
+    SKILL.md) that leads out of the repo is skipped unread — `escapes()` reports it."""
     base = os.path.join(root, canon_dir)
     skills: list[dict] = []
-    if not os.path.isdir(base):
-        return skills
+    canon = canon_dir.replace(os.sep, "/")
+    bad = [e.split(":", 1)[0] for e in escapes(root, canon_dir)]
+    if not os.path.isdir(base) or any(not b.startswith(canon + "/") for b in bad):
+        return skills   # .claude or .claude/skills itself leads out / cannot be resolved: nothing is read
     for entry in sorted(os.listdir(base)):
         d = os.path.join(base, entry)
         skill_md = os.path.join(d, "SKILL.md")
+        here = f"{canon}/{entry}"
+        if any(b == here or b.startswith(here + "/") for b in bad) or not _contained_skill(root, d):
+            continue
         if not os.path.isdir(d) or not os.path.isfile(skill_md):
             continue
         with open(skill_md, "r", encoding="utf-8") as f:
@@ -191,7 +274,7 @@ def write_all(root: str) -> list[str]:
 
 def check(root: str) -> list[str]:
     """Problems that make the committed catalog/mirrors differ from the canonical skills. Empty = clean."""
-    problems: list[str] = []
+    problems: list[str] = [f"{e} (Claude Code would load it by itself)" for e in escapes(root)]
     skills, cat, mirrors = expected_state(root)
     if not skills:
         problems.append(f"no skills under {CANON}")
@@ -223,6 +306,29 @@ def check(root: str) -> list[str]:
     return [p.replace(os.sep, "/") for p in problems]
 
 
+def claude_native_dirs(cwd: str) -> list[str]:
+    """The .claude/skills folders Claude Code's own loader auto-loads for a session started in <cwd> (traced in
+    claude.exe 2.1.226): <dir>/.claude/skills for cwd and each parent, stopping BEFORE the home folder and AT the git
+    root (inclusive). FX AI starts claude with cwd = its checkout (brother_chat.REPO), so for a git checkout this is just
+    <checkout>/.claude/skills. Existence only (lexists) — nothing is listed or read."""
+    out: list[str] = []
+    home = os.path.normcase(os.path.abspath(os.path.expanduser("~")))
+    d = os.path.abspath(cwd)
+    while True:
+        if os.path.normcase(d) == home:
+            break
+        s = os.path.join(d, ".claude", "skills")
+        if os.path.lexists(s):
+            out.append(s.replace(os.sep, "/"))
+        if os.path.lexists(os.path.join(d, ".git")):
+            break
+        up = os.path.dirname(d)
+        if up == d:
+            break
+        d = up
+    return out
+
+
 def probe(root: str) -> dict:
     """What a client that opens <root> sees. Read-only; never writes."""
     root = os.path.abspath(root)
@@ -230,6 +336,9 @@ def probe(root: str) -> dict:
     if not os.path.isdir(root):
         out["problems"].append("folder does not exist")
         return out
+    out["claude_native_dirs"] = claude_native_dirs(root)
+    for e in escapes(root):
+        out["problems"].append(f"{e} - Claude Code (FX AI) would load it by itself; not listed here, not read")
     skills = scan(root)
     out["skills"] = [{"name": s["name"], "content_id": s["content_id"], "version": s["version"], "path": s["path"]} for s in skills]
     cat_path = os.path.join(root, CATALOG)
@@ -286,7 +395,16 @@ def fxai_probe(package: str | None) -> dict:
         out["problems"].append("FX AI is not installed here (no packages/fx_ai.json and no $FXAI_HOME)")
         return out
     if out["fxai_home"]:
-        out["probe"] = probe(out["fxai_home"])
+        # The launcher (mcp/houdini/brother_chat.py, loaded from $FXAI_HOME by pythonrc.py) starts claude with
+        # cwd = REPO = three folders above its own file, i.e. the checkout at FXAI_HOME. Say so only when that file is
+        # really there, and probe exactly that folder.
+        launcher = os.path.join(out["fxai_home"], "mcp", "houdini", "brother_chat.py")
+        out["launcher"] = launcher.replace(os.sep, "/") if os.path.isfile(launcher) else None
+        out["launcher_root"] = (os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(launcher))))
+                                .replace(os.sep, "/") if out["launcher"] else None)
+        if not out["launcher"]:
+            out["problems"].append("no mcp/houdini/brother_chat.py under FXAI_HOME - FX AI cannot start from it")
+        out["probe"] = probe(out["launcher_root"] or out["fxai_home"])
     return out
 
 
